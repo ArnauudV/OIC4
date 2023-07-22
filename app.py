@@ -1,46 +1,64 @@
 import streamlit as st
 import piexif
 from PIL import Image
-import urllib.request
+from geopy.geocoders import Nominatim
+import fractions
 
-st.title("Éditeur de métadonnées EXIF")
+def handle_image(image_path):
+    image = Image.open(image_path)
+    exif_data = piexif.load(image.info['exif'])
 
-# URL de l'image de Dwayne Johnson
-image_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f1/Dwayne_Johnson_2%2C_2013.jpg/1920px-Dwayne_Johnson_2%2C_2013.jpg"
+    return exif_data
 
-# Charger l'image
-with urllib.request.urlopen(image_url) as url:
-    img = Image.open(url)
+def degToDmsRational(degFloat):
+    minFloat = degFloat % 1 * 60
+    secFloat = minFloat % 1 * 60
+    deg = fractions.Fraction(round(degFloat), 1)
+    min = fractions.Fraction(round(minFloat), 1)
+    sec = fractions.Fraction(round(secFloat * 10000), 10000)
 
-# Afficher l'image
-st.image(img, caption="Dwayne Johnson", use_column_width=True)
+    return ((deg.numerator, deg.denominator), (min.numerator, min.denominator), (sec.numerator, sec.denominator))
 
-# Charger les métadonnées EXIF
-exif_dict = piexif.load(img.info["exif"])
+def handle_form(exif_dict):
+    st.subheader('Modifier les métadonnées EXIF')
+    with st.form(key='exif_form'):
+        new_author = st.text_input(label='Nouveau auteur', value=exif_dict['0th'].get(piexif.ImageIFD.Artist, b'').decode())
+        new_location = st.text_input(label='Nouvelle localisation')
+        new_datetime = st.text_input(label='Nouvelle date et heure (format: "YYYY:MM:DD HH:MM:SS")', value=exif_dict['Exif'].get(piexif.ExifIFD.DateTimeOriginal, b'').decode())
+        submit_button = st.form_submit_button(label='Appliquer les modifications')
 
-# Créer un formulaire pour éditer les métadonnées EXIF
-with st.form(key="exif_form"):
-    st.write("Modifier les métadonnées EXIF")
-    for ifd_name in exif_dict:
-        if ifd_name == "thumbnail":
-            continue
-        st.write(ifd_name)
-        for tag in exif_dict[ifd_name]:
-            tag_value = exif_dict[ifd_name][tag]
-            tag_name = piexif.TAGS[ifd_name][tag]["name"]
-            new_value = st.text_input(f"{tag_name} ({tag})", tag_value)
-            if new_value != tag_value:
-                if isinstance(tag_value, bytes):
-                    exif_dict[ifd_name][tag] = new_value.encode("utf-8")
-                else:
-                    try:
-                        exif_dict[ifd_name][tag] = type(tag_value)(new_value)
-                    except ValueError:
-                        st.warning(f"Erreur de conversion pour {tag_name}: la valeur entrée n'est pas valide.")
-                    
-    submit_button = st.form_submit_button("Enregistrer les modifications")
     if submit_button:
-        exif_bytes = piexif.dump(exif_dict)
-        img.save("edited_image.jpg", exif=exif_bytes)
-        st.write("Les modifications ont été enregistrées.")
+        geolocator = Nominatim(user_agent="geoapiExercises")
+        location = geolocator.geocode(new_location)
+        st.map([{"lat": location.latitude, "lon": location.longitude}]) # Map displaying
+
+        exif_dict['0th'][piexif.ImageIFD.Artist] = new_author.encode()
+        exif_dict['GPS'][piexif.GPSIFD.GPSLatitude] = degToDmsRational(location.latitude)
+        exif_dict['GPS'][piexif.GPSIFD.GPSLongitude] = degToDmsRational(location.longitude)
+        
+        if new_datetime:  # Add the new datetime only if provided by the user
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = new_datetime.encode()
+
+    return exif_dict
+
+
+def main():
+    st.title("Modificateur de métadonnées EXIF")
+
+    uploaded_file = st.file_uploader("Choisissez une image", type=['jpg', 'jpeg'])
+    if uploaded_file is not None:
+        with open("temp.jpg", "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        exif_dict = handle_image("temp.jpg")
+        modified_exif_dict = handle_form(exif_dict)
+
+        if modified_exif_dict:
+            exif_bytes = piexif.dump(modified_exif_dict)
+            im = Image.open('temp.jpg')
+            im.save('output.jpg', exif=exif_bytes)
+
+        st.image('output.jpg')
+
+if __name__ == "__main__":
+    main()
 
